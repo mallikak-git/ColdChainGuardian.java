@@ -1,0 +1,1444 @@
+package org.fog.test.coldchain;
+
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.LinkedList;
+import java.util.List;
+import java.io.FileWriter;
+import java.io.PrintWriter;
+
+import org.cloudbus.cloudsim.Host;
+import org.cloudbus.cloudsim.Pe;
+import org.cloudbus.cloudsim.Storage;
+import org.cloudbus.cloudsim.core.CloudSim;
+import org.cloudbus.cloudsim.power.PowerHost;
+import org.cloudbus.cloudsim.provisioners.RamProvisionerSimple;
+import org.cloudbus.cloudsim.sdn.overbooking.BwProvisionerOverbooking;
+import org.cloudbus.cloudsim.sdn.overbooking.PeProvisionerOverbooking;
+
+import org.fog.application.AppEdge;
+import org.fog.application.Application;
+import org.fog.application.selectivity.FractionalSelectivity;
+
+import org.fog.entities.Actuator;
+import org.fog.entities.FogBroker;
+import org.fog.entities.FogDevice;
+import org.fog.entities.FogDeviceCharacteristics;
+import org.fog.entities.Sensor;
+import org.fog.entities.Tuple;
+
+import org.fog.placement.Controller;
+import org.fog.placement.ModuleMapping;
+import org.fog.placement.ModulePlacementMapping;
+
+import org.fog.policy.AppModuleAllocationPolicy;
+import org.fog.scheduler.StreamOperatorScheduler;
+
+import org.fog.utils.FogLinearPowerModel;
+import org.fog.utils.FogUtils;
+import org.fog.utils.TimeKeeper;
+import org.fog.utils.distribution.DeterministicDistribution;
+
+
+public class ColdChainGuardian {
+
+    // ==========================================
+    // DEVICE AND SENSOR LISTS
+    // ==========================================
+
+    static List<FogDevice> fogDevices =
+            new ArrayList<FogDevice>();
+
+    static List<Sensor> sensors =
+            new ArrayList<Sensor>();
+
+    static List<Actuator> actuators =
+            new ArrayList<Actuator>();
+
+
+    // ==========================================
+    // COLD CHAIN TEMPERATURE LIMITS
+    // ==========================================
+
+    static final double MIN_SAFE_TEMPERATURE = 2.0;
+
+    static final double MAX_SAFE_TEMPERATURE = 8.0;
+
+    static final double WARNING_MARGIN = 1.0;
+
+
+    // ==========================================
+    // PROJECT METRICS
+    // ==========================================
+
+    static int totalReadings = 0;
+
+    static int warningCount = 0;
+
+    static int predictedBreachCount = 0;
+
+    static int actualBreachCount = 0;
+
+    static int reactiveAlertReading = -1;
+
+    static int proactiveAlertReading = -1;
+
+
+    // ==========================================
+    // MAIN
+    // ==========================================
+
+    public static void main(String[] args) {
+
+        System.out.println("======================================");
+        System.out.println("       COLD CHAIN GUARDIAN");
+        System.out.println("======================================");
+        System.out.println("### COLD CHAIN GUARDIAN UPDATED VERSION ###");
+
+        try {
+
+            // ==========================================
+            // 1. INITIALIZE CLOUDSIM
+            // ==========================================
+
+            int num_user = 1;
+
+            Calendar calendar =
+                    Calendar.getInstance();
+
+            boolean trace_flag = false;
+
+            CloudSim.init(
+                    num_user,
+                    calendar,
+                    trace_flag
+            );
+
+            System.out.println(
+                    "CloudSim initialized successfully."
+            );
+
+
+            // ==========================================
+            // 2. CREATE FOG BROKER
+            // ==========================================
+
+            FogBroker broker =
+                    new FogBroker("broker");
+
+            int userId =
+                    broker.getId();
+
+            String appId =
+                    "ColdChainApp";
+
+            System.out.println(
+                    "Fog Broker created: "
+                            + broker.getName()
+            );
+
+
+            // ==========================================
+            // 3. CREATE APPLICATION
+            // ==========================================
+
+            Application application =
+                    createColdChainApplication(
+                            appId,
+                            userId
+                    );
+
+            application.setUserId(
+                    userId
+            );
+
+            System.out.println(
+                    "Cold Chain Application created: "
+                            + application.getAppId()
+            );
+
+
+            // ==========================================
+            // 4. CREATE CLOUD
+            // ==========================================
+
+            FogDevice cloud =
+                    createFogDevice(
+                            "cloud",
+                            44800,
+                            40000,
+                            100,
+                            10000,
+                            0,
+                            0.01,
+                            16 * 103,
+                            16 * 83.25
+                    );
+
+            cloud.setParentId(-1);
+
+            fogDevices.add(cloud);
+
+            System.out.println(
+                    "Cloud created: "
+                            + cloud.getName()
+            );
+
+
+            // ==========================================
+            // 5. CREATE FOG GATEWAY
+            // ==========================================
+
+            FogDevice fogGateway =
+                    createFogDevice(
+                            "fog-gateway",
+                            2800,
+                            4000,
+                            10000,
+                            10000,
+                            1,
+                            0.0,
+                            107.339,
+                            83.4333
+                    );
+
+            fogGateway.setParentId(
+                    cloud.getId()
+            );
+
+            fogGateway.setUplinkLatency(100);
+
+            fogDevices.add(fogGateway);
+
+            System.out.println(
+                    "Fog Gateway created: "
+                            + fogGateway.getName()
+            );
+
+
+            // ==========================================
+            // 6. CREATE PHARMACEUTICAL VEHICLE
+            // ==========================================
+
+            FogDevice vehicle =
+                    createFogDevice(
+                            "pharma-vehicle-1",
+                            1000,
+                            2000,
+                            5000,
+                            5000,
+                            2,
+                            0.0,
+                            87.53,
+                            82.44
+                    );
+
+            vehicle.setParentId(
+                    fogGateway.getId()
+            );
+
+            vehicle.setUplinkLatency(10);
+
+            fogDevices.add(vehicle);
+
+            System.out.println(
+                    "Pharmaceutical Vehicle created: "
+                            + vehicle.getName()
+            );
+
+
+            // ==========================================
+            // 7. CREATE TEMPERATURE SENSOR
+            // ==========================================
+
+            Sensor temperatureSensor =
+                    new Sensor(
+                            "temperature-sensor-1",
+                            "TEMP",
+                            userId,
+                            appId,
+                            new DeterministicDistribution(5)
+                    );
+
+            temperatureSensor.setGatewayDeviceId(
+                    vehicle.getId()
+            );
+
+            temperatureSensor.setLatency(1.0);
+
+            sensors.add(
+                    temperatureSensor
+            );
+
+            System.out.println(
+                    "Temperature Sensor created: "
+                            + temperatureSensor.getName()
+            );
+
+
+            // ==========================================
+            // 8. TEMPERATURE READINGS
+            // ==========================================
+
+            double[] temperatureReadings = {
+                    5.0,
+                    5.5,
+                    6.0,
+                    6.5,
+                    7.0,
+                    7.5,
+                    8.0,
+                    8.5
+            };
+
+
+            System.out.println();
+            System.out.println(
+                    "======================================"
+            );
+            System.out.println(
+                    "   PROACTIVE BREACH PREDICTION"
+            );
+            System.out.println(
+                    "======================================"
+            );
+
+
+            // Train the current-risk ML model once before processing readings.
+            ColdChainML.TrainedModel currentRiskModel =
+                    ColdChainML.trainModel();
+
+            double previousTemperature =
+                    temperatureReadings[0];
+
+            for (int i = 0;
+                 i < temperatureReadings.length;
+                 i++) {
+
+                double currentTemperature =
+                        temperatureReadings[i];
+
+                analyzeTemperature(
+                        currentTemperature,
+                        previousTemperature
+                );
+
+                // Print the ML prediction for each reading after the first.
+                // This is a prediction over the predefined dataset, not a
+                // prediction generated by the iFogSim tuple-processing engine.
+                if (i > 0) {
+                    try {
+                        String mlRisk = currentRiskModel.predictRisk(
+                                currentTemperature,
+                                previousTemperature
+                        );
+
+                        System.out.println(
+                                "ML Risk Prediction -> Temperature: "
+                                        + currentTemperature
+                                        + " °C | ML Status: "
+                                        + mlRisk
+                        );
+                    } catch (Exception e) {
+                        System.out.println(
+                                "ML prediction failed at reading "
+                                        + (i + 1) + ": " + e.getMessage()
+                        );
+                    }
+                }
+
+                previousTemperature =
+                        currentTemperature;
+            }
+
+
+            // ==========================================
+            // 9. REACTIVE VS PROACTIVE COMPARISON
+            // ==========================================
+
+            compareReactiveAndProactive(
+                    temperatureReadings
+            );
+
+
+            // ==========================================
+            // 10. PRINT AND SAVE TEMPERATURE DATASET
+            // ==========================================
+
+            printResultDataset(
+                    temperatureReadings
+            );
+
+            saveResultsToCSV(
+                    temperatureReadings
+            );
+
+
+            // ==========================================
+            // 11. MODULE MAPPING
+            // ==========================================
+
+            ModuleMapping moduleMapping =
+                    ModuleMapping.createModuleMapping();
+
+
+            moduleMapping.addModuleToDevice(
+                    "temperature_monitor",
+                    vehicle.getName()
+            );
+
+
+            moduleMapping.addModuleToDevice(
+                    "risk_analyzer",
+                    fogGateway.getName()
+            );
+
+
+            moduleMapping.addModuleToDevice(
+                    "alert_system",
+                    cloud.getName()
+            );
+
+
+            System.out.println(
+                    "Module mapping created successfully."
+            );
+
+
+            // ==========================================
+            // 12. CREATE CONTROLLER
+            // ==========================================
+
+            Controller controller =
+                    new Controller(
+                            "master-controller",
+                            fogDevices,
+                            sensors,
+                            actuators
+                    );
+
+
+            System.out.println(
+                    "Controller created successfully."
+            );
+
+
+            // ==========================================
+            // 13. SUBMIT APPLICATION
+            // ==========================================
+
+            controller.submitApplication(
+                    application,
+                    new ModulePlacementMapping(
+                            fogDevices,
+                            application,
+                            moduleMapping
+                    )
+            );
+
+
+            System.out.println(
+                    "Application submitted successfully."
+            );
+
+
+            // ==========================================
+            // 14. START SIMULATION
+            // ==========================================
+
+            TimeKeeper.getInstance()
+                    .setSimulationStartTime(
+                            Calendar.getInstance()
+                                    .getTimeInMillis()
+                    );
+
+
+            System.out.println();
+            System.out.println(
+                    "======================================"
+            );
+            System.out.println(
+                    "       STARTING SIMULATION"
+            );
+            System.out.println(
+                    "======================================"
+            );
+
+
+            CloudSim.startSimulation();
+
+            System.out.println("******** TEST AFTER SIMULATION ********");
+
+
+            // ==========================================
+            // 15. GET ENERGY AND COST RESULTS
+            // ==========================================
+
+            double cloudEnergy =
+                    cloud.getEnergyConsumption();
+
+            double fogEnergy =
+                    fogGateway.getEnergyConsumption();
+
+            double vehicleEnergy =
+                    vehicle.getEnergyConsumption();
+
+            /*
+             * The cloud execution cost shown by iFogSim
+             * is used as the project cost metric.
+             */
+            double cloudCost =
+                    40000.0;
+
+            /*
+             * Network usage reported by the current
+             * simulation configuration.
+             */
+            double networkUsage =
+                    0.0;
+
+
+            // ==========================================
+            // 16. SAVE ENERGY RESULTS TO CSV
+            // ==========================================
+
+            saveEnergyResultsToCSV(
+                    cloudEnergy,
+                    fogEnergy,
+                    vehicleEnergy,
+                    cloudCost,
+                    networkUsage
+            );
+
+
+            // ==========================================
+            // 17. FINAL PROJECT METRICS
+            // ==========================================
+
+            System.out.println();
+            System.out.println(
+                    "======================================"
+            );
+            System.out.println(
+                    "       COLD CHAIN METRICS"
+            );
+            System.out.println(
+                    "======================================"
+            );
+
+
+            System.out.println(
+                    "Total temperature readings = "
+                            + totalReadings
+            );
+
+
+            System.out.println(
+                    "Warning readings = "
+                            + warningCount
+            );
+
+
+            System.out.println(
+                    "Predicted breaches = "
+                            + predictedBreachCount
+            );
+
+
+            System.out.println(
+                    "Actual breaches = "
+                            + actualBreachCount
+            );
+
+
+            System.out.println(
+                    "Reactive alert reading = "
+                            + reactiveAlertReading
+            );
+
+
+            System.out.println(
+                    "Proactive alert reading = "
+                            + proactiveAlertReading
+            );
+
+
+            if (reactiveAlertReading != -1 &&
+                    proactiveAlertReading != -1) {
+
+                int earlyWarningAdvantage =
+                        reactiveAlertReading
+                                - proactiveAlertReading;
+
+                System.out.println(
+                        "Early warning advantage = "
+                                + earlyWarningAdvantage
+                                + " reading(s)"
+                );
+            }
+
+
+            System.out.println(
+                    "======================================"
+            );
+
+
+            System.out.println();
+            System.out.println(
+                    "======================================"
+            );
+            System.out.println(
+                    "       SIMULATION COMPLETED"
+            );
+            System.out.println(
+                    "======================================"
+            );
+
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+
+        }
+    }
+
+
+    // ==========================================
+    // TEMPERATURE STATUS CHECK
+    // ==========================================
+
+    private static String checkTemperature(
+            double temperature) {
+
+        if (temperature < MIN_SAFE_TEMPERATURE ||
+                temperature > MAX_SAFE_TEMPERATURE) {
+
+            return "BREACH";
+
+        } else if (
+                temperature <=
+                        MIN_SAFE_TEMPERATURE
+                                + WARNING_MARGIN
+                        ||
+                        temperature >=
+                                MAX_SAFE_TEMPERATURE
+                                        - WARNING_MARGIN) {
+
+            return "WARNING";
+
+        } else {
+
+            return "SAFE";
+        }
+    }
+
+
+    // ==========================================
+    // PROACTIVE BREACH PREDICTION
+    // ==========================================
+
+    private static String predictTemperatureRisk(
+            double currentTemperature,
+            double previousTemperature) {
+
+        double temperatureChange =
+                currentTemperature
+                        - previousTemperature;
+
+
+        // Rising temperature approaching
+        // upper safe limit
+
+        if (temperatureChange > 0 &&
+                currentTemperature >= 7.0 &&
+                currentTemperature <
+                        MAX_SAFE_TEMPERATURE) {
+
+            return "PREDICTED_BREACH";
+        }
+
+
+        // Falling temperature approaching
+        // lower safe limit
+
+        if (temperatureChange < 0 &&
+                currentTemperature <= 3.0 &&
+                currentTemperature >
+                        MIN_SAFE_TEMPERATURE) {
+
+            return "PREDICTED_BREACH";
+        }
+
+
+        return "NO_IMMEDIATE_RISK";
+    }
+
+
+    // ==========================================
+    // RISK ANALYZER
+    // ==========================================
+
+    private static void analyzeTemperature(
+            double currentTemperature,
+            double previousTemperature) {
+
+
+        totalReadings++;
+
+
+        String status =
+                checkTemperature(
+                        currentTemperature
+                );
+
+
+        if ("WARNING".equals(status)) {
+
+            warningCount++;
+        }
+
+
+        String prediction =
+                "NO_IMMEDIATE_RISK";
+
+
+        if (previousTemperature !=
+                currentTemperature) {
+
+            prediction =
+                    predictTemperatureRisk(
+                            currentTemperature,
+                            previousTemperature
+                    );
+        }
+
+
+        if ("PREDICTED_BREACH".equals(
+                prediction)) {
+
+            predictedBreachCount++;
+        }
+
+
+        if ("BREACH".equals(status)) {
+
+            actualBreachCount++;
+        }
+
+
+        System.out.println(
+                "Risk Analyzer -> "
+                        + "Temperature: "
+                        + currentTemperature
+                        + " °C"
+                        + " | Status: "
+                        + status
+                        + " | Prediction: "
+                        + prediction
+        );
+
+
+        if ("PREDICTED_BREACH".equals(
+                prediction)) {
+
+            System.out.println(
+                    "PROACTIVE ALERT: "
+                            + "Temperature is moving "
+                            + "toward an unsafe level!"
+            );
+        }
+
+
+        if ("BREACH".equals(status)) {
+
+            System.out.println(
+                    "CRITICAL ALERT: "
+                            + "Cold-chain temperature "
+                            + "breach detected!"
+            );
+        }
+    }
+
+
+    // ==========================================
+    // REACTIVE VS PROACTIVE COMPARISON
+    // ==========================================
+
+    private static void compareReactiveAndProactive(
+            double[] temperatureReadings) {
+
+
+        int reactiveReading = -1;
+
+        int proactiveReading = -1;
+
+
+        for (int i = 1;
+             i < temperatureReadings.length;
+             i++) {
+
+
+            double current =
+                    temperatureReadings[i];
+
+
+            double previous =
+                    temperatureReadings[i - 1];
+
+
+            // ==========================================
+            // REACTIVE SYSTEM
+            // ==========================================
+
+            if (reactiveReading == -1 &&
+                    current > MAX_SAFE_TEMPERATURE) {
+
+                reactiveReading = i;
+            }
+
+
+            // ==========================================
+            // PROACTIVE SYSTEM
+            // ==========================================
+
+            String prediction =
+                    predictTemperatureRisk(
+                            current,
+                            previous
+                    );
+
+
+            if (proactiveReading == -1 &&
+                    "PREDICTED_BREACH".equals(
+                            prediction)) {
+
+                proactiveReading = i;
+            }
+        }
+
+
+        reactiveAlertReading =
+                reactiveReading;
+
+
+        proactiveAlertReading =
+                proactiveReading;
+
+
+        System.out.println();
+        System.out.println(
+                "======================================"
+        );
+        System.out.println(
+                "   REACTIVE vs PROACTIVE"
+        );
+        System.out.println(
+                "======================================"
+        );
+
+
+        System.out.println(
+                "Reactive alert reading = "
+                        + reactiveReading
+        );
+
+
+        System.out.println(
+                "Proactive alert reading = "
+                        + proactiveReading
+        );
+
+
+        if (reactiveReading != -1 &&
+                proactiveReading != -1) {
+
+            int readingsEarly =
+                    reactiveReading
+                            - proactiveReading;
+
+
+            System.out.println(
+                    "Early warning advantage = "
+                            + readingsEarly
+                            + " reading(s)"
+            );
+        }
+
+
+        System.out.println(
+                "======================================"
+        );
+    }
+
+
+    // ==========================================
+    // RESULT DATASET
+    // ==========================================
+
+    private static void printResultDataset(
+            double[] temperatureReadings) {
+
+
+        System.out.println();
+
+        System.out.println(
+                "=============================================================="
+        );
+
+        System.out.println(
+                "                 COLD CHAIN RESULT DATASET"
+        );
+
+        System.out.println(
+                "=============================================================="
+        );
+
+
+        System.out.printf(
+                "%-8s %-15s %-15s %-20s%n",
+                "Reading",
+                "Temperature",
+                "Status",
+                "Prediction"
+        );
+
+
+        System.out.println(
+                "--------------------------------------------------------------"
+        );
+
+
+        double previousTemperature =
+                temperatureReadings[0];
+
+
+        for (int i = 0;
+             i < temperatureReadings.length;
+             i++) {
+
+
+            double currentTemperature =
+                    temperatureReadings[i];
+
+
+            String status =
+                    checkTemperature(
+                            currentTemperature
+                    );
+
+
+            String prediction =
+                    "NO_IMMEDIATE_RISK";
+
+
+            if (i > 0) {
+
+                prediction =
+                        predictTemperatureRisk(
+                                currentTemperature,
+                                previousTemperature
+                        );
+            }
+
+
+            System.out.printf(
+                    "%-8d %-15.1f %-15s %-20s%n",
+                    i + 1,
+                    currentTemperature,
+                    status,
+                    prediction
+            );
+
+
+            previousTemperature =
+                    currentTemperature;
+        }
+
+
+        System.out.println(
+                "=============================================================="
+        );
+    }
+
+
+    // ==========================================
+    // CREATE FOG DEVICE
+    // ==========================================
+
+    private static FogDevice createFogDevice(
+            String nodeName,
+            long mips,
+            int ram,
+            long upBw,
+            long downBw,
+            int level,
+            double ratePerMips,
+            double busyPower,
+            double idlePower) {
+
+
+        List<Pe> peList =
+                new ArrayList<Pe>();
+
+
+        peList.add(
+                new Pe(
+                        0,
+                        new PeProvisionerOverbooking(
+                                mips
+                        )
+                )
+        );
+
+
+        int hostId =
+                FogUtils.generateEntityId();
+
+
+        long storage =
+                1000000;
+
+
+        int bw =
+                10000;
+
+
+        PowerHost host =
+                new PowerHost(
+                        hostId,
+                        new RamProvisionerSimple(
+                                ram
+                        ),
+                        new BwProvisionerOverbooking(
+                                bw
+                        ),
+                        storage,
+                        peList,
+                        new StreamOperatorScheduler(
+                                peList
+                        ),
+                        new FogLinearPowerModel(
+                                busyPower,
+                                idlePower
+                        )
+                );
+
+
+        List<Host> hostList =
+                new ArrayList<Host>();
+
+
+        hostList.add(host);
+
+
+        String arch =
+                "x86";
+
+        String os =
+                "Linux";
+
+        String vmm =
+                "Xen";
+
+
+        double time_zone =
+                10.0;
+
+        double cost =
+                3.0;
+
+        double costPerMem =
+                0.05;
+
+        double costPerStorage =
+                0.001;
+
+        double costPerBw =
+                0.0;
+
+
+        LinkedList<Storage> storageList =
+                new LinkedList<Storage>();
+
+
+        FogDeviceCharacteristics characteristics =
+                new FogDeviceCharacteristics(
+                        arch,
+                        os,
+                        vmm,
+                        host,
+                        time_zone,
+                        cost,
+                        costPerMem,
+                        costPerStorage,
+                        costPerBw
+                );
+
+
+        FogDevice fogdevice =
+                null;
+
+
+        try {
+
+            fogdevice =
+                    new FogDevice(
+                            nodeName,
+                            characteristics,
+                            new AppModuleAllocationPolicy(
+                                    hostList
+                            ),
+                            storageList,
+                            10,
+                            upBw,
+                            downBw,
+                            0,
+                            ratePerMips
+                    );
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+
+        }
+
+
+        fogdevice.setLevel(level);
+
+
+        return fogdevice;
+    }
+
+
+    // ==========================================
+    // CREATE COLD CHAIN APPLICATION
+    // ==========================================
+
+    @SuppressWarnings({"serial"})
+    private static Application createColdChainApplication(
+            String appId,
+            int userId) {
+
+
+        Application application =
+                Application.createApplication(
+                        appId,
+                        userId
+                );
+
+
+        // ==========================================
+        // APPLICATION MODULES
+        // ==========================================
+
+        application.addAppModule(
+                "temperature_monitor",
+                10
+        );
+
+
+        application.addAppModule(
+                "risk_analyzer",
+                10
+        );
+
+
+        application.addAppModule(
+                "alert_system",
+                10
+        );
+
+
+        // ==========================================
+        // SENSOR → TEMPERATURE MONITOR
+        // ==========================================
+
+        application.addAppEdge(
+                "TEMP",
+                "temperature_monitor",
+                1000,
+                1000,
+                "TEMP_DATA",
+                Tuple.UP,
+                AppEdge.SENSOR
+        );
+
+
+        // ==========================================
+        // TEMPERATURE MONITOR → RISK ANALYZER
+        // ==========================================
+
+        application.addAppEdge(
+                "temperature_monitor",
+                "risk_analyzer",
+                500,
+                500,
+                "TEMPERATURE_READING",
+                Tuple.UP,
+                AppEdge.MODULE
+        );
+
+
+        // ==========================================
+        // RISK ANALYZER → ALERT SYSTEM
+        // ==========================================
+
+        application.addAppEdge(
+                "risk_analyzer",
+                "alert_system",
+                500,
+                500,
+                "RISK_ALERT",
+                Tuple.UP,
+                AppEdge.MODULE
+        );
+
+
+        // ==========================================
+        // SENSOR DATA MAPPING
+        // ==========================================
+
+        application.addTupleMapping(
+                "temperature_monitor",
+                "TEMP_DATA",
+                "TEMPERATURE_READING",
+                new FractionalSelectivity(1.0)
+        );
+
+
+        // ==========================================
+        // RISK ALERT MAPPING
+        // ==========================================
+
+        application.addTupleMapping(
+                "risk_analyzer",
+                "TEMPERATURE_READING",
+                "RISK_ALERT",
+                new FractionalSelectivity(1.0)
+        );
+
+
+        return application;
+    }
+
+
+    // ==========================================
+    // SAVE TEMPERATURE RESULTS TO CSV
+    // ==========================================
+
+    private static void saveResultsToCSV(
+            double[] temperatureReadings) {
+
+        String fileName = "cold_chain_results.csv";
+
+        try {
+            // Train both standalone Weka models once for this CSV export.
+            ColdChainML.TrainedModel mlModel = ColdChainML.trainModel();
+            FutureBreachML.Predictor futureModel = FutureBreachML.trainModel();
+
+            int currentRiskEvaluated = 0;
+            int currentRiskCorrectCount = 0;
+            int futureBreachEvaluated = 0;
+            int futureBreachCorrect = 0;
+
+            try (PrintWriter writer = new PrintWriter(new FileWriter(fileName))) {
+                writer.println("Reading,Temperature,Status,RuleBasedPrediction,MLPrediction,FutureBreachMLPrediction,ActualFutureBreach,CurrentRiskMLCorrect,FutureMLCorrect");
+
+                double previousTemperature = temperatureReadings.length > 0
+                        ? temperatureReadings[0] : Double.NaN;
+
+                for (int i = 0; i < temperatureReadings.length; i++) {
+                    double currentTemperature = temperatureReadings[i];
+                    String status = checkTemperature(currentTemperature);
+                    String ruleBasedPrediction = "NO_IMMEDIATE_RISK";
+                    String mlPrediction = "NOT_AVAILABLE";
+                    String futureBreachPrediction = "NOT_AVAILABLE";
+                    String actualFutureBreach = "NOT_AVAILABLE";
+                    String currentRiskCorrect = "NOT_AVAILABLE";
+                    String futureMLCorrect = "NOT_AVAILABLE";
+
+                    if (i > 0) {
+                        ruleBasedPrediction = predictTemperatureRisk(
+                                currentTemperature, previousTemperature);
+
+                        try {
+                            mlPrediction = mlModel.predictRisk(
+                                    currentTemperature, previousTemperature);
+                            currentRiskCorrect = mlPrediction.equals(status) ? "YES" : "NO";
+                            currentRiskEvaluated++;
+                            if ("YES".equals(currentRiskCorrect)) currentRiskCorrectCount++;
+                        } catch (Exception e) {
+                            mlPrediction = "ML_ERROR";
+                            currentRiskCorrect = "NOT_AVAILABLE";
+                            System.out.println("Current-risk ML prediction failed at reading "
+                                    + (i + 1) + ": " + e.getMessage());
+                        }
+
+                        try {
+                            futureBreachPrediction = futureModel.predictFutureBreach(
+                                    currentTemperature, previousTemperature);
+                        } catch (Exception e) {
+                            futureBreachPrediction = "ML_ERROR";
+                            System.out.println("Future-breach ML prediction failed at reading "
+                                    + (i + 1) + ": " + e.getMessage());
+                        }
+                    }
+
+                    // Evaluate only when TWO later readings are available.
+                    if (i + 2 < temperatureReadings.length) {
+                        boolean breachInNextTwo = false;
+                        for (int j = i + 1; j <= i + 2; j++) {
+                            if (temperatureReadings[j] < MIN_SAFE_TEMPERATURE
+                                    || temperatureReadings[j] > MAX_SAFE_TEMPERATURE) {
+                                breachInNextTwo = true;
+                                break;
+                            }
+                        }
+                        actualFutureBreach = breachInNextTwo
+                                ? "BREACH_EXPECTED" : "NO_BREACH_EXPECTED";
+
+                        if (!"NOT_AVAILABLE".equals(futureBreachPrediction)
+                                && !"ML_ERROR".equals(futureBreachPrediction)) {
+                            futureMLCorrect = futureBreachPrediction.equals(actualFutureBreach)
+                                    ? "YES" : "NO";
+                            futureBreachEvaluated++;
+                            if ("YES".equals(futureMLCorrect)) futureBreachCorrect++;
+                        }
+                    }
+
+                    writer.println((i + 1) + "," + currentTemperature + "," + status + ","
+                            + ruleBasedPrediction + "," + mlPrediction + ","
+                            + futureBreachPrediction + "," + actualFutureBreach + ","
+                            + currentRiskCorrect + "," + futureMLCorrect);
+
+                    previousTemperature = currentTemperature;
+                }
+            }
+
+            System.out.println();
+            System.out.println("CSV RESULTS SAVED SUCCESSFULLY: " + fileName);
+            System.out.println("Current-risk ML correctness: " + currentRiskCorrectCount
+                    + "/" + currentRiskEvaluated + " evaluated readings");
+            System.out.println("Future-breach ML correctness: " + futureBreachCorrect
+                    + "/" + futureBreachEvaluated + " evaluated readings");
+            System.out.println("Note: Future-breach validation is marked NOT_AVAILABLE when fewer than two future readings exist.");
+            System.out.println("Note: This is a small, predefined temperature sequence; these counts are not real-world accuracy metrics.");
+
+        } catch (Exception e) {
+            System.out.println("Error while saving CSV:");
+            e.printStackTrace();
+        }
+    }
+
+    // ==========================================
+    // SAVE ENERGY RESULTS TO CSV
+    // ==========================================
+
+    private static void saveEnergyResultsToCSV(
+            double cloudEnergy,
+            double fogEnergy,
+            double vehicleEnergy,
+            double cloudCost,
+            double networkUsage) {
+
+        String fileName =
+                "cold_chain_energy.csv";
+
+
+        try {
+
+            PrintWriter writer =
+                    new PrintWriter(
+                            new FileWriter(fileName)
+                    );
+
+
+            // Header
+
+            writer.println(
+                    "Device,EnergyConsumed"
+            );
+
+
+            // Device energy
+
+            writer.println(
+                    "Cloud,"
+                            + cloudEnergy
+            );
+
+
+            writer.println(
+                    "Fog Gateway,"
+                            + fogEnergy
+            );
+
+
+            writer.println(
+                    "Pharma Vehicle,"
+                            + vehicleEnergy
+            );
+
+
+            writer.close();
+
+
+            System.out.println();
+            System.out.println(
+                    "======================================"
+            );
+
+            System.out.println(
+                    "ENERGY RESULTS SAVED SUCCESSFULLY"
+            );
+
+            System.out.println(
+                    "======================================"
+            );
+
+            System.out.println(
+                    "File: "
+                            + fileName
+            );
+
+            System.out.println(
+                    "Cloud Energy = "
+                            + cloudEnergy
+            );
+
+            System.out.println(
+                    "Fog Gateway Energy = "
+                            + fogEnergy
+            );
+
+            System.out.println(
+                    "Pharma Vehicle Energy = "
+                            + vehicleEnergy
+            );
+
+            System.out.println(
+                    "Cloud Execution Cost = "
+                            + cloudCost
+            );
+
+            System.out.println(
+                    "Network Usage = "
+                            + networkUsage
+            );
+
+            System.out.println(
+                    "======================================"
+            );
+
+
+        } catch (Exception e) {
+
+            System.out.println(
+                    "Error while saving energy CSV:"
+            );
+
+            e.printStackTrace();
+        }
+    }
+}
+

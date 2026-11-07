@@ -1,0 +1,37 @@
+COLD CHAIN GUARDIAN – ML VALIDATION OUTPUT
+Environment: OpenJDK 21.0.12.1, bundled Weka jar
+Compilation: All 451 Java source files compiled successfully (2 existing deprecation/removal warnings).
+
+ColdChainML:
+- Training instances: 16
+- Classifier: Random Forest (100 iterations)
+- 4-fold cross-validation accuracy: 75.00%
+- Correctly classified: 12/16
+- This is a very small illustrative dataset; do not present it as robust real-world accuracy.
+
+FutureBreachValidation:
+- Model: FutureBreachML.trainModel() (Random Forest, 100 iterations)
+- Training sequences: 100 synthetic sequences
+- Independent test sequences: 20 synthetic sequences
+- Readings per sequence: 20
+- Forecast horizon: next 2 readings
+- Test examples: 340
+- Accuracy: 98.53%
+- Breach precision: 97.65%
+- Breach recall: 96.51%
+- Breach F1-score: 97.08%
+- Confusion matrix (actual rows, predicted columns):
+  Actual no-breach: 252 correct, 2 false positives
+  Actual breach: 3 false negatives, 83 correct
+
+Rule-based baseline on same synthetic test set:
+- Accuracy: 97.65%
+- Breach precision: 91.49%
+- Breach recall: 100.00%
+- Breach F1-score: 95.56%
+- Confusion matrix:
+  Actual no-breach: 246 correct, 8 false positives
+  Actual breach: 0 false negatives, 86 correct
+
+Interpretation:
+These are synthetic-data validation results only. The test data uses a different random seed but the same synthetic sequence-generation rules. The numbers do not establish real-world pharmaceutical safety, generalisation to real shipments, or suitability for any specific medicine.
